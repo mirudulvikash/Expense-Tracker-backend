@@ -282,6 +282,21 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// DELETE /api/profile (Protected)
+app.delete('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    await pool.query('DELETE FROM transactions WHERE user_id = $1;', [userId]);
+    await pool.query('DELETE FROM budgets WHERE user_id = $1;', [userId]);
+    await pool.query('DELETE FROM users WHERE id = $1;', [userId]);
+    res.status(200).json({ message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('Database Error:', error);
+    console.error('Error deleting user profile:', error);
+    res.status(500).json({ error: 'Failed to delete user account', details: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
