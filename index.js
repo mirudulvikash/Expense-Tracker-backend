@@ -124,9 +124,14 @@ app.post('/api/budgets', async (req, res) => {
 // GET /api/profile
 app.get('/api/profile', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM users WHERE id = 1;');
+    let result = await pool.query('SELECT * FROM users WHERE id = 1;');
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User profile not found' });
+      await pool.query(`
+        INSERT INTO users (id, name, email, avatar_url, base_loan)
+        VALUES (1, 'Guest User', 'guest@expenseflow.app', 'https://ui-avatars.com/api/?name=Guest&background=EAB308&color=000&size=150', 0)
+        ON CONFLICT (id) DO NOTHING;
+      `);
+      result = await pool.query('SELECT * FROM users WHERE id = 1;');
     }
     res.json(result.rows[0]);
   } catch (error) {
@@ -141,16 +146,14 @@ app.put('/api/profile', async (req, res) => {
   try {
     const { name, avatar_url, base_loan } = req.body;
     const queryText = `
-      UPDATE users
-      SET name = $1, avatar_url = $2, base_loan = $3
-      WHERE id = 1
+      INSERT INTO users (id, name, avatar_url, base_loan)
+      VALUES (1, $1, $2, $3)
+      ON CONFLICT (id)
+      DO UPDATE SET name = $1, avatar_url = $2, base_loan = $3
       RETURNING *;
     `;
     const values = [name, avatar_url, base_loan];
     const result = await pool.query(queryText, values);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'User profile not found' });
-    }
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Database Error:', error);
