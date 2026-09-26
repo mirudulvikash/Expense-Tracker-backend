@@ -297,6 +297,44 @@ app.delete('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// PUT /api/auth/update-password (Protected)
+app.put('/api/auth/update-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+
+    const userResult = await pool.query('SELECT password_hash FROM users WHERE id = $1;', [req.user.id]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    if (!user.password_hash) {
+      return res.status(401).json({ error: 'Incorrect current password' });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Incorrect current password' });
+    }
+
+    const saltRounds = 10;
+    const newPasswordHash = await bcrypt.hash(newPassword, saltRounds);
+
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2;', [newPasswordHash, req.user.id]);
+
+    res.status(200).json({ message: 'Password updated successfully' });
+  } catch (error) {
+    console.error('Database Error:', error);
+    console.error('Error updating password:', error);
+    res.status(500).json({ error: 'Failed to update password', details: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
