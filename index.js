@@ -3,8 +3,11 @@ const cors = require('cors');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const { Resend } = require('resend');
 require('dotenv').config();
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -36,6 +39,8 @@ const initDb = async () => {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
       ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(255);
       ALTER TABLE users ADD COLUMN IF NOT EXISTS base_loan NUMERIC DEFAULT 0;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS otp VARCHAR(6);
     `);
     console.log('Database schema verified/updated successfully.');
   } catch (error) {
@@ -95,14 +100,29 @@ app.post('/api/auth/signup', async (req, res) => {
 
     const defaultAvatar = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=EAB308&color=000&size=150`;
 
+    // Generate random 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
     // Insert user into PostgreSQL database
     const insertQuery = `
-      INSERT INTO users (name, email, password_hash, avatar_url, base_loan)
-      VALUES ($1, $2, $3, $4, 0)
-      RETURNING id, name, email, avatar_url, base_loan;
+      INSERT INTO users (name, email, password_hash, avatar_url, base_loan, is_verified, otp)
+      VALUES ($1, $2, $3, $4, 0, false, $5)
+      RETURNING id, name, email, avatar_url, base_loan, is_verified;
     `;
-    const result = await pool.query(insertQuery, [name, email, password_hash, defaultAvatar]);
+    const result = await pool.query(insertQuery, [name, email, password_hash, defaultAvatar, otp]);
     const user = result.rows[0];
+
+    // Immediately after insertion, use Resend to email the OTP
+    try {
+      await resend.emails.send({
+        from: 'onboarding@resend.dev',
+        to: email,
+        subject: 'Verify your ExpenseFlow Account',
+        html: `Your verification code is: ${otp}`
+      });
+    } catch (err) {
+      console.error('Failed to send OTP via resend:', err);
+    }
 
     // Sign JWT
     const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
@@ -112,6 +132,39 @@ app.post('/api/auth/signup', async (req, res) => {
     console.error('Database Error:', error);
     console.error('Error during signup:', error);
     res.status(500).json({ error: 'Failed to register user', details: error.message });
+  }
+});
+
+// POST /api/auth/verify-otp
+app.post('/api/auth/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ error: 'Email and OTP are required' });
+    }
+
+    const result = await pool.query('SELECT * FROM users WHERE email = $1;', [email]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = result.rows[0];
+
+    if (user.is_verified) {
+      return res.status(200).json({ message: 'User already verified' });
+    }
+
+    if (user.otp === otp) {
+      await pool.query('UPDATE users SET is_verified = true, otp = null WHERE email = $1;', [email]);
+      return res.status(200).json({ message: 'Email verified successfully' });
+    } else {
+      return res.status(400).json({ error: 'Invalid OTP' });
+    }
+  } catch (error) {
+    console.error('Database Error:', error);
+    console.error('Error verifying OTP:', error);
+    res.status(500).json({ error: 'Failed to verify OTP', details: error.message });
   }
 });
 
@@ -140,6 +193,10 @@ app.post('/api/auth/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(400).json({ error: 'Invalid email or password' });
+    }
+
+    if (user.is_verified === false) {
+      return res.status(403).json({ error: 'Email not verified. Please verify your OTP to login.' });
     }
 
     // Sign JWT
